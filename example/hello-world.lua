@@ -3,7 +3,7 @@ vips = require "vips"
 -- uncomment for very chatty output
 -- vips.log.enable(true)
 
-image = vips.Image.text("Hello <i>World!</i>", {dpi = 300})
-image = image:invert()
-print("writting to x.png ...")
-image:write_to_file("x.png")
+image1 = vips.Image.text("Hello <i>World!</i>", {dpi = 300})
+print("writing to x.png ...")
+image1:write_to_file("x.png")
+

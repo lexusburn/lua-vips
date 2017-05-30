@@ -49,13 +49,17 @@ local voperation_mt = {
     __index = {
         argumentmap_typeof = ffi.typeof("VipsArgumentMapFn"),
 
-        -- cast to a vobject
+        -- cast to a vobject ... this will create a new cdata object, but won't
+        -- change any VipsObject reference counts, nor add a finalizer
         vobject = function(self)
             return ffi.cast(vobject.typeof, self)
         end,
 
-        get = function(self, name)
-            return self:vobject():get(name)
+        -- but for new() we can't do self:vobject():new() since that would
+        -- attach the unref callback to the cdata object made by the vobject()
+        -- cast, not to this voperation
+        new = function(self)
+            return vobject.new(self)
         end,
 
         set = function(self, name, match_image, value)
@@ -96,9 +100,8 @@ local voperation_mt = {
             local vop = vips.vips_operation_new(name)
             if vop == nil then
                 error("no such operation\n" .. vobject.get_error())
-                return
             end
-            vop:vobject():new()
+            vop:new()
 
             local arguments = vop:getargs()
 
@@ -158,7 +161,8 @@ local voperation_mt = {
                     n = n + 1
                     if not vop:set(arguments[i].name, 
                         match_image, call_args[n]) then
-                        return
+                        error("unable to call " .. name .. "\n" .. 
+                            vobject.get_error())
                     end
                 end
             end
@@ -166,7 +170,8 @@ local voperation_mt = {
             if last_arg then
                 for k, v in pairs(last_arg) do
                     if not vop:set(k, match_image, v) then
-                        return
+                        error("unable to call " .. name .. "\n" .. 
+                            vobject.get_error())
                     end
                 end
             end
@@ -174,13 +179,16 @@ local voperation_mt = {
             log.msg("constructing ...")
             local vop2 = vips.vips_cache_operation_build(vop)
             if vop2 == nil then
-                vips.vips_object_unref_outputs(vop)
                 error("unable to call " .. name .. "\n" .. vobject.get_error())
             end
+            vop2:new()
             vop = vop2
+            vop2 = nil
 
             log.msg("getting output ...")
-            result = {}
+
+            local result = {}
+            local vob = vop:vobject()
             n = 1
             for i = 1, #arguments do
                 local flags = arguments[i].flags
@@ -188,7 +196,7 @@ local voperation_mt = {
                 if band(flags, OUTPUT) ~= 0 and 
                     band(flags, REQUIRED) ~= 0 and 
                     band(flags, DEPRECATED) == 0 then
-                    result[n] = vop:get(arguments[i].name)
+                    result[n] = vob:get(arguments[i].name)
                     n = n + 1
                 end
             end
@@ -199,7 +207,7 @@ local voperation_mt = {
                 if band(flags, OUTPUT) ~= 0 and 
                     band(flags, REQUIRED) == 0 and 
                     band(flags, DEPRECATED) == 0 then
-                    result[n] = vop:get(arguments[i].name)
+                    result[n] = vob:get(arguments[i].name)
                     n = n + 1
                 end
             end
@@ -209,10 +217,13 @@ local voperation_mt = {
 
                 if band(flags, OUTPUT) ~= 0 and 
                     band(flags, DEPRECATED) ~= 0 then
-                    result[n] = vop:get(arguments[i].name)
+                    result[n] = vob:get(arguments[i].name)
                     n = n + 1
                 end
             end
+
+            vips.vips_object_unref_outputs(vop)
+            vop = nil
 
             return unpack(result)
         end,

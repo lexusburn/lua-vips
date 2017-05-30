@@ -74,8 +74,6 @@ ffi.cdef[[
         unsigned long int offset;
     } VipsArgumentClass;
 
-    void g_object_unref (void* object);
-
     int vips_object_get_argument (VipsObject* object, 
         const char *name, GParamSpec** pspec, 
         VipsArgumentClass** argument_class,
@@ -89,6 +87,8 @@ ffi.cdef[[
     const char* vips_error_buffer (void);
     void vips_error_clear (void);
 
+    void vips_object_print_all (void);
+
 ]]
 
 local vobject = {}
@@ -101,6 +101,13 @@ local vobject_mt = {
         pspec_typeof = ffi.typeof("GParamSpec*[1]"),
         argument_class_typeof = ffi.typeof("VipsArgumentClass*[1]"),
         argument_instance_typeof = ffi.typeof("VipsArgumentInstance*[1]"),
+
+        print_all = function(msg)
+            collectgarbage()
+            print(msg)
+            vips.vips_object_print_all()
+            print()
+        end,
 
         new = function(self)
             log.msg("vobject.new")
@@ -139,11 +146,16 @@ local vobject_mt = {
                 error("field " .. name ..  " does not exist")
             end
 
-            local gva = gvalue.newp()
-            gva[0]:init(self:get_typeof(name))
-            vips.g_object_get_property(self, name, gva)
+            local pgv = gvalue.newp()
+            pgv[0]:init(self:get_typeof(name))
+            -- this will add a ref for GObject properties, that ref will be
+            -- unreffed when the gvalue is finalized
+            vips.g_object_get_property(self, name, pgv)
 
-            return gva[0]:get()
+            local result = pgv[0]:get()
+            vips.g_value_unset(pgv[0])
+
+            return result
         end,
 
         set = function(self, name, value)

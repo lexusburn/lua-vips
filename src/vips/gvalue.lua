@@ -21,6 +21,9 @@ ffi.cdef[[
     void* g_malloc(size_t size);
     void g_free(void* data);
 
+    void g_object_ref (void* object);
+    void g_object_unref (void* object);
+
     void g_value_init (GValue* value, unsigned long int type);
     void g_value_unset (GValue* value);
     const char* g_type_name (unsigned long int type);
@@ -31,6 +34,7 @@ ffi.cdef[[
         unsigned long int gtype, const char* str);
     const char *vips_enum_nick (unsigned long int gtype, int value);
 
+    void g_value_set_boolean (GValue* value, int v_boolean);
     void g_value_set_int (GValue* value, int i);
     void g_value_set_double (GValue* value, double d);
     void g_value_set_enum (GValue* value, int e);
@@ -45,6 +49,7 @@ ffi.cdef[[
     void vips_value_set_blob (GValue* value,
             void (*free_fn)(void* data), void* data, size_t length);
 
+    int g_value_get_boolean (const GValue* value);
     int g_value_get_int (GValue* value);
     double g_value_get_double (GValue* value);
     int g_value_get_enum (GValue* value);
@@ -57,7 +62,16 @@ ffi.cdef[[
     VipsImage** vips_value_get_array_image (const GValue* value, int* n);
     void* vips_value_get_blob (const GValue* value, size_t* length);
 
+    void vips_object_print_all (void);
+
 ]]
+
+local function print_all(msg)
+    collectgarbage()
+    print(msg)
+    vips.vips_object_print_all()
+    print()
+end
 
 local gvalue = {}
 local gvalue_mt = {
@@ -80,6 +94,7 @@ local gvalue_mt = {
         pstr_typeof = ffi.typeof("char*[?]"),
 
         -- look up some common gtypes at init for speed
+        gbool_type = vips.g_type_from_name("gboolean"),
         gint_type = vips.g_type_from_name("gint"),
         gdouble_type = vips.g_type_from_name("gdouble"),
         gstr_type = vips.g_type_from_name("gchararray"),
@@ -100,6 +115,8 @@ local gvalue_mt = {
             return gv
         end,
 
+        -- this won't be unset() automatically! you need to
+        -- g_value_unset() yourself after calling
         newp = function()
             local pgv = ffi.new(gvalue.pgv_typeof)
             log.msg("allocating one-element array of gvalue", pgv)
@@ -124,7 +141,9 @@ local gvalue_mt = {
             local gtype = gv.type
             local fundamental = vips.g_type_fundamental(gtype)
 
-            if gtype == gvalue.gint_type then
+            if gtype == gvalue.gbool_type then
+                vips.g_value_set_boolean(gv, value)
+            elseif gtype == gvalue.gint_type then
                 vips.g_value_set_int(gv, value)
             elseif gtype == gvalue.gdouble_type then
                 vips.g_value_set_double(gv, value)
@@ -194,7 +213,9 @@ local gvalue_mt = {
 
             local result
 
-            if gtype == gvalue.gint_type then
+            if gtype == gvalue.gbool_type then
+                result = vips.g_value_get_boolean(gv)
+            elseif gtype == gvalue.gint_type then
                 result = vips.g_value_get_int(gv)
             elseif gtype == gvalue.gdouble_type then
                 result = vips.g_value_get_double(gv)
@@ -225,8 +246,15 @@ local gvalue_mt = {
 
                 result = ffi.string(cstr, psize[0])
             elseif gtype == gvalue.image_type then
-                local vobject = vips.g_value_get_object(gv)
-                local vimage = ffi.cast(gvalue.image_typeof, vobject)
+                -- g_value_get_object() will not add a ref ... that is
+                -- held by the gvalue
+                local vo = vips.g_value_get_object(gv)
+                local vimage = ffi.cast(gvalue.image_typeof, vo)
+
+                -- we want a ref that will last with the life of the vimage: 
+                -- this ref is matched by the unref that's attached to finalize
+                -- by Image.new() 
+                vips.g_object_ref(vimage)
 
                 result = Image.new(vimage)
 
@@ -254,7 +282,14 @@ local gvalue_mt = {
                 local array = vips.vips_value_get_array_image(gv, pint)
                 result = {}
                 for i = 0, pint[0] - 1 do
-                    result[i + 1] = Image.new(array[i])
+                    -- this will make a new cdata object 
+                    local vimage = array[i]
+
+                    -- vips_value_get_array_image() adds a ref for each image in
+                    -- the array ... we must remember to drop them
+                    vobject.new(vimage)
+
+                    result[i + 1] = Image.new(vimage)
                 end
 
             elseif gtype == gvalue.blob_type then
